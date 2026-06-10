@@ -80,11 +80,6 @@ sessionInfo()
 [33] CellChat_2.1.2
 ```
 
-and Python (v. 4.4.1) libraries/tools:
-
-```bash
-pySCENIC v 0.12.1
-```
 
 
 
