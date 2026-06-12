@@ -7,6 +7,7 @@ library(patchwork)
 library(SingleCellExperiment)
 library(optparse)
 library(ComplexHeatmap)
+library(clustree)
 
 ###functs
 optimize_kparam <- function(seurat_obj, 
@@ -329,6 +330,43 @@ for (sample_name in names(seurat_singlets_list)) {
   ))
 }
 
+for (id in names(seurat_singlets_list)){
+  print(names(seurat_singlets_list[id]))
+  print(ncol(seurat_singlets_list[[id]]))
+}
+
+for (id in names(seurat_singlets_list)){
+  seurat_obj <- seurat_singlets_list[[id]]
+  print(ElbowPlot(seurat_obj, ndims = 50))
+  
+  
+  # Run JackStraw (slow - use num.replicate=100 as a perm subsample)
+  seurat_obj <- JackStraw(seurat_obj, num.replicate = 100)
+  
+  # Score PCs:
+  
+  seurat_obj <- ScoreJackStraw(seurat_obj, dims = 1:20)
+  
+  seurat_singlets_list[[id]] <- seurat_obj
+}
+for (id in names(seurat_singlets_list)){
+  seurat_obj <- seurat_singlets_list[[id]]
+  sample_id <- names(seurat_singlets_list[id])
+  
+  print(sample_id)
+  print(ElbowPlot(seurat_obj, ndims = 50))
+  png(file = file.path(plots_dir, paste0(sample_id, "_Jackstraw_integrated.png")), 
+      width = 16, height = 12, units = "in", res = 300)
+
+  print(JackStrawPlot(seurat_obj, dims = 1:20))
+  dev.off()
+}
+
+## optimum PCs: 20, 20, 12 (HTK_HPV18)
+
+optimumPC_df <- data.frame(
+  sample = c("MW_HTK_HPV18", "MW_HTK2_HPV16", "MW_VU40T"),
+  nPCs = c(12,20,20))
 
 # for (i in seq_along(seurat_singlets_list)){
 #   sample_name <- names(seurat_singlets_list)[i]
@@ -336,74 +374,67 @@ for (sample_name in names(seurat_singlets_list)) {
 #   k_param_res[[i]] <- optimize_kparam_by_silhouette(seurat_singlets_list[[i]], k_values = c(0.1, 0.25, 0.5, 0.75, 1.0), dims = 1:min_pc)
 # }
 
-k_params <- list()
-k_vals <- c(10, 20, 30, 40, 50)
-resolution_use <- 0.1
-
-kparam_res <- lapply(names(seurat_singlets_list), function(sample_name) {
-  message("Running on: ", sample_name)
-  
-  seurat_obj <- seurat_singlets_list[[sample_name]]
-  
-  # Get optimal PCs for this sample
-  dims_use <- pc_summary$optimal_pcs[pc_summary$sample == sample_name][[1]]
-  
-  optimize_kparam(seurat_obj, 
-                  dims = dims_use, 
-                  k_values = k_vals, 
-                  resolution = resolution_use,
-                  do_plot = TRUE)
-})
-names(kparam_res) <- names(seurat_singlets_list)
-all_K_metrics <- do.call(rbind, lapply(names(kparam_res), function(sample_name) {
-  df <- kparam_res[[sample_name]]$metrics
-  df$sample <- sample_name
-  return(df)
-}))
-
-best_k_by_sample <- all_K_metrics %>%
-  group_by(sample) %>%
-  slice_max(order_by = avg_silhouette, n = 1, with_ties = FALSE) %>%
-  ungroup()
-
-
-ggplot(all_K_metrics, aes(x = k.param, y = avg_silhouette, color = sample)) +
-  geom_line() + geom_point() +
-  labs(title = "Silhouette Score by k.param", y = "Avg. Silhouette", x = "k.param")
-
-
-# # Name each result with the corresponding sample
-# names(results_list) <- names(seurat_singlets_list)
-
-best_global_k <- all_K_metrics %>%
-  group_by(k.param) %>%
-  summarise(mean_silhouette = mean(avg_silhouette)) %>%
-  slice_max(mean_silhouette, n = 1)
-
-## can leave k param as default for human and mouse
-
-
-
-
-
-resolution_res <- list()
-for (i in seq_along(seurat_singlets_list)){
-  sample_name <- names(seurat_singlets_list)[i]
-  min_pc <- pc_summary$optimal_pcs[pc_summary$sample == sample_name]
-  resolution_res[[i]] <- optimize_resolution_by_silhouette(seurat_singlets_list[[i]], resolutions = c(0.1, 0.25, 0.5, 0.75, 1.0), dims = 1:min_pc)
-}
-
-
-
-## best k param is default and best resolution is 0.1
+#}
+# `
 
 ## rerun clustering with optimised dims
 
 for (i in seq_along(seurat_singlets_list)){
-  seurat_singlets_list[[i]] <- FindNeighbors(seurat_singlets_list[[i]], dims=1:min_pc)
-  seurat_singlets_list[[i]] <- FindClusters(seurat_singlets_list[[i]], resolution=0.1)
+  current_sample <- names(seurat_singlets_list)[i]
+  
+  # 2. Extract the specific nPCs value cleanly as a numeric scalar
+  min_pc <- optimumPC_df$nPCs[optimumPC_df$sample == current_sample]
+  
+  # Safety check: Ensure a matching sample was actually found in your dataframe
+  if (length(min_pc) == 1) {
+    # 3. Run FindNeighbors with the dynamic PC cutoff
+    seurat_singlets_list[[i]] <- FindNeighbors(seurat_singlets_list[[i]], dims = 1:min_pc)
+    # 4. Run FindClusters (uncommented, ensuring 'resolution' is defined globally)
+    # seurat_singlets_list[[i]] <- FindClusters(seurat_singlets_list[[i]], resolution = resolution)
+  } else {
+    warning(paste("Sample", current_sample, "not found or ambiguous in optimumPC_df. Skipping..."))
+  }
+  
+  resolutions <- seq(0.1, 1.5, by = 0.1)
+    
+  for (res in resolutions) {
+    seurat_singlets_list[[i]] <- FindClusters(
+      seurat_singlets_list[[i]],
+      resolution = res,
+      verbose = FALSE, 
+      random.seed = 666
+    )
+
 }
 
+
+  
+  # Save clustering results manually
+  seurat_singlets_list[[i]][[paste0("RNA_snn_res.", res)]] <- Idents(seurat_singlets_list[[i]])
+  
+}
+
+for (id in names(seurat_singlets_list)){
+  
+  seurat_obj <- seurat_singlets_list[[id]]
+  
+  sample_id <- names(seurat_singlets_list[id])
+  
+  # 2. Extract the specific nPCs value cleanly as a numeric scalar
+  min_pc <- optimumPC_df$nPCs[optimumPC_df$sample == sample_id]
+  
+  png(file = file.path(plots_dir, paste0(sample_id,"_",min_pc, "_PCs_ClustTree_VU40T_stabilityscores_integrated.png")), width = 16, height = 12, units = "in", res = 300)
+    p1 <- clustree(seurat_obj, prefix = "RNA_snn_res.", node_colour = "sc3_stability") ## best resolution lies between 0.6-0.8
+    print(p1)
+    dev.off()
+    
+  png(file = file.path(plots_dir, paste0(sample_id,"_",min_pc, "_PCs_ClustTree_VU40T_integrated.png")), width = 16, height = 12, units = "in", res = 300)
+    p1 <- clustree(seurat_obj, prefix = "RNA_snn_res.") ## best resolution lies between 0.6-0.8
+    print(p1)
+    dev.off()
+}
+
+#optimum res hpv18 possibly 0.3,  hpv16 = 0.4, VU40T = 0.
 
 for (i in seq_along(seurat_singlets_list)){
   sample_name <- names(seurat_singlets_list)[i]
@@ -411,7 +442,7 @@ for (i in seq_along(seurat_singlets_list)){
   plot1 <- DimPlot(seurat_singlets_list[[i]], reduction = "umap", label = T)
   
   
-  png(file = file.path(plots_dir, paste0 ("SingletsOnly_UMAP_and_t-sne_", sample_name, ".png")), width = 6, height = 5, units = "in", res = 300, )
+  png(file = file.path(plots_dir, paste0 ("SingletsOnly_UMA`P_and_t-sne_", sample_name, ".png")), width = 6, height = 5, units = "in", res = 300, )
   
   print(
     plot1 +
